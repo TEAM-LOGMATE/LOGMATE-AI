@@ -39,15 +39,28 @@ def extract_features(parsed: dict) -> dict:
     url_length = len(url)
     url_depth = url.count('/')
     has_query_param = 1 if '?' in url else 0
-    special_char_count = sum([url.count(c) for c in ['&', '=', '%', '$', '#', '@', '!', '*']])
+    special_char_count = len(re.findall(r"[^\w/]", str(url)))
+
 
     agent_length = len(agent)
     ref_exists = 0 if referer == "-" else 1
 
     # IOC 키워드 
-    uri_ioc_count = sum([1 for ioc in ["login", "admin", ".exe"] if ioc in url.lower()])
-    ua_ioc_count = sum([1 for ioc in ["python", "curl", "scan"] if ioc in agent.lower()])
-    ioc_total_count = uri_ioc_count + ua_ioc_count
+    IOC_PATTERNS = [
+    'admin', 'login', 'passwd', 'shell', '.php', '.asp', '.jsp', '.exe',
+    'cmd=', 'eval(', 'base64', '../', 'select%20', 'union%20',
+    '<script>', '%3Cscript%3E', 'sqlmap', 'wget', 'curl', 'nmap', 'etc/passwd'
+    ]
+
+    def count_ioc(text: str, patterns=IOC_PATTERNS) -> int:
+        text = str(text).lower()
+        return sum(1 for pattern in patterns if pattern in text)
+
+    uri_ioc_count = count_ioc(url)
+    ua_ioc_count = count_ioc(agent)
+    ref_ioc_count = count_ioc(referer)
+    ioc_total_count = uri_ioc_count + ua_ioc_count + ref_ioc_count
+
 
     return {
         "status": parsed["status"],
@@ -75,13 +88,18 @@ def predict_line(input_data: LogLine):
         parsed = parse_log_line(input_data.log)
         features = extract_features(parsed)
 
-        method = parsed["method", "unknown"]         # method one-hot 인코딩
+        print("parsed : ", parsed) ## 잠시 테스트용
+        print("features", features)
+
+        method = parsed.get("method", "UNKNOWN")
+        if f"method_{method}" not in METHOD_COL_PATH:
+            method = "UNKNOWN"
+
         method_onehot = {
             col: 1 if col == f"method_{method}" else 0
             for col in METHOD_COL_PATH
         }
-        if not any(method_onehot.values()):  # unknown 처리
-            method_onehot = {col: 1 if col == "method_UNKNOWN" else 0 for col in METHOD_COL_PATH}
+
 
         # 모든 피처 병합
         full_features = {**features, **method_onehot}
@@ -90,10 +108,16 @@ def predict_line(input_data: LogLine):
         input_vector = [full_features.get(f, 0) for f in FEATURE_PATH]
         input_vector = np.array(input_vector).reshape(1, -1)
 
-        # 점수 예측 (값이 작을수록 이상치)
-        score = MODEL_PATH.score_samples(input_vector)[0]
+        print("method_onehot", method_onehot)## 잠시 테스트용
+        print("input_vector", input_vector)
+        print("full_features", full_features)
+        print("FEATURE_PATH:", FEATURE_PATH) 
+        print("Missing features:", [f for f in FEATURE_PATH if f not in full_features])
 
-        return {"score": score}
+        # 점수 예측 (값이 작을수록 이상치)
+        raw_score = MODEL_PATH.decision_function(input_vector)[0]
+        scaled_score = scale_score(raw_score)
+        return {"raw_score": round(raw_score, 5), "score": scaled_score}
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
