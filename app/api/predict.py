@@ -46,8 +46,8 @@ def extract_features(parsed: dict) -> dict:
     ref_exists = 0 if referer == "-" else 1
 
     # IOC 키워드 
-    IOC_PATTERNS = [
-    'admin', 'login', 'passwd', 'shell', '.php', '.asp', '.jsp', '.exe',
+    IOC_PATTERNS = [ 
+    'admin', 'login', 'passwd', 'shell', '.php', '.asp', '.jsp', '.exe', #추후 확장하여 보안기능 향상 가능
     'cmd=', 'eval(', 'base64', '../', 'select%20', 'union%20',
     '<script>', '%3Cscript%3E', 'sqlmap', 'wget', 'curl', 'nmap', 'etc/passwd'
     ]
@@ -114,7 +114,7 @@ def predict_line(input_data: LogLine):
         print("FEATURE_PATH:", FEATURE_PATH) 
         print("Missing features:", [f for f in FEATURE_PATH if f not in full_features])
 
-        # 점수 예측 (값이 작을수록 이상치)
+        # 점수 예측 (값이 클수록 이상치)
         raw_score = MODEL_PATH.decision_function(input_vector)[0]
         scaled_score = scale_score(raw_score)
         return {"raw_score": round(raw_score, 5), "score": scaled_score}
