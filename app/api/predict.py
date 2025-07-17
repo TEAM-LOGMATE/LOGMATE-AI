@@ -45,21 +45,19 @@ def extract_features(parsed: dict) -> dict:
     agent_length = len(agent)
     ref_exists = 0 if referer == "-" else 1
 
-    # IOC 키워드 
-    IOC_PATTERNS = [ 
-    'admin', 'login', 'passwd', 'shell', '.php', '.asp', '.jsp', '.exe', #추후 확장하여 보안기능 향상 가능
-    'cmd=', 'eval(', 'base64', '../', 'select%20', 'union%20',
-    '<script>', '%3Cscript%3E', 'sqlmap', 'wget', 'curl', 'nmap', 'etc/passwd'
-    ]
+    # IOC 키워드 분리
+    IOC_PATTERNS = joblib.load(os.path.join("app", "model", "ioc_keywords.pkl"))
+    url_ioc_keywords = IOC_PATTERNS.get("url", [])
+    ua_ioc_keywords = IOC_PATTERNS.get("user_agent", [])
+
 
     def count_ioc(text: str, patterns=IOC_PATTERNS) -> int:
         text = str(text).lower()
         return sum(1 for pattern in patterns if pattern in text)
 
-    uri_ioc_count = count_ioc(url)
-    ua_ioc_count = count_ioc(agent)
-    ref_ioc_count = count_ioc(referer)
-    ioc_total_count = uri_ioc_count + ua_ioc_count + ref_ioc_count
+    uri_ioc_count = count_ioc(url, url_ioc_keywords)
+    ua_ioc_count = count_ioc(agent, ua_ioc_keywords)
+    ioc_total_count = uri_ioc_count + ua_ioc_count
 
 
     return {
