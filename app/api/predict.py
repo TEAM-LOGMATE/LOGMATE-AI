@@ -1,10 +1,13 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from collections import defaultdict
 import numpy as np
 import joblib
 import os
 import re
 
+log_storage = []
+status_counter = defaultdict(int)
 router = APIRouter()        # FastAPI 생성
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))     #경로 설정
@@ -45,21 +48,19 @@ def extract_features(parsed: dict) -> dict:
     agent_length = len(agent)
     ref_exists = 0 if referer == "-" else 1
 
-    # IOC 키워드 
-    IOC_PATTERNS = [
-    'admin', 'login', 'passwd', 'shell', '.php', '.asp', '.jsp', '.exe',
-    'cmd=', 'eval(', 'base64', '../', 'select%20', 'union%20',
-    '<script>', '%3Cscript%3E', 'sqlmap', 'wget', 'curl', 'nmap', 'etc/passwd'
-    ]
+    # IOC 키워드 분리
+    IOC_PATTERNS = joblib.load(os.path.join("app", "model", "ioc_keywords.pkl"))
+    url_ioc_keywords = IOC_PATTERNS.get("url", [])
+    ua_ioc_keywords = IOC_PATTERNS.get("user_agent", [])
+
 
     def count_ioc(text: str, patterns=IOC_PATTERNS) -> int:
         text = str(text).lower()
         return sum(1 for pattern in patterns if pattern in text)
 
-    uri_ioc_count = count_ioc(url)
-    ua_ioc_count = count_ioc(agent)
-    ref_ioc_count = count_ioc(referer)
-    ioc_total_count = uri_ioc_count + ua_ioc_count + ref_ioc_count
+    uri_ioc_count = count_ioc(url, url_ioc_keywords)
+    ua_ioc_count = count_ioc(agent, ua_ioc_keywords)
+    ioc_total_count = uri_ioc_count + ua_ioc_count
 
 
     return {
@@ -85,8 +86,12 @@ def scale_score(raw_score, score_min=-0.1804, score_max=0.2810):        # min-ma
 @router.post("/predict_line")
 def predict_line(input_data: LogLine):
     try:
+        log_storage.append(input_data.log)
         parsed = parse_log_line(input_data.log)
         features = extract_features(parsed)
+
+        status = parsed["status"]           # 상태 코드 카운팅
+        status_counter[status] += 1
 
         print("parsed : ", parsed) ## 잠시 테스트용
         print("features", features)
@@ -108,16 +113,26 @@ def predict_line(input_data: LogLine):
         input_vector = [full_features.get(f, 0) for f in FEATURE_PATH]
         input_vector = np.array(input_vector).reshape(1, -1)
 
-        print("method_onehot", method_onehot)## 잠시 테스트용
-        print("input_vector", input_vector)
-        print("full_features", full_features)
-        print("FEATURE_PATH:", FEATURE_PATH) 
-        print("Missing features:", [f for f in FEATURE_PATH if f not in full_features])
-
-        # 점수 예측 (값이 작을수록 이상치)
-        raw_score = MODEL_PATH.decision_function(input_vector)[0]
+        raw_score = MODEL_PATH.decision_function(input_vector)[0] #모델 출력 결과 보여주기
         scaled_score = scale_score(raw_score)
-        return {"raw_score": round(raw_score, 5), "score": scaled_score}
+        print(f"[예측 결과] 이상치 점수: {scaled_score}")
+
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+@router.get("/logs") #전체 로그 보여주는 기능
+def get_all_logs():
+    return {"logs": log_storage}
+
+@router.get("/status_chart") # 상태 코드 기반으로 도넛 차트 형식으로 보여주는 기능
+def get_status_chart_data():
+    total = sum(status_counter.values())
+    if total == 0:
+        return {"labels": [], "values": []}
+
+    labels = [str(code) for code in status_counter]
+    values = [round((count / total) * 100, 2) for count in status_counter.values()]
+    return {"labels": labels, "values": values}
+
+    
