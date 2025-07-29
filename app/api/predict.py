@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from collections import defaultdict
+from app.core.model import load_model
 import numpy as np
 import joblib
 import os
@@ -11,9 +12,9 @@ status_counter = defaultdict(int)
 router = APIRouter()        # FastAPI 생성
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))     #경로 설정
-MODEL_PATH = joblib.load("app/model/isolation_model.pkl")
-FEATURE_PATH = joblib.load("app/model/features.pkl")
-METHOD_COL_PATH = joblib.load("app/model/method_cols.pkl")
+MODEL_PATH = load_model("isolation_model.pkl")
+FEATURE_PATH = load_model("features.pkl")
+METHOD_COL_PATH = load_model("method_cols.pkl")
 
 class LogLine(BaseModel):
     log: str
