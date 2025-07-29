@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from collections import defaultdict
+from app.utils.parser import parse_log_line
 from app.core.model import load_model
 import numpy as np
 import joblib
@@ -17,27 +18,11 @@ FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
 
 class LogLine(BaseModel):
-    log: str
-
-def parse_log_line(log: str) -> dict: # 로그 파싱 함수 
-    pattern = r'(\S+) - - \[(.*?)\] "(\S+) (\S+) \S+" (\d{3}) (\d+) "(.*?)" "(.*?)"'
-    match = re.match(pattern, log)
-    if not match:
-        raise ValueError("Invalid log format")
-
-    ip, timestamp, method, url, status, size, referer, user_agent = match.groups()
-    return {
-        "method": method,
-        "url": url,
-        "status": int(status),
-        "size": int(size),
-        "referer": referer,
-        "user-agent": user_agent
-    }    
+    log: str  
 
 def extract_features(parsed: dict) -> dict:
     url = parsed["url"]
-    agent = parsed["user-agent"]
+    agent = parsed["user_agent"]
     referer = parsed["referer"]
 
     url_length = len(url)
