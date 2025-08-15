@@ -1,24 +1,28 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from collections import defaultdict
-from app.utils.parser import parse_log_line
+from fastapi import APIRouter, HTTPException, Request
+from collections import Counter
+from threading import Lock
 from app.core.model import load_model
+from app.core.scaler import scale_score
+from app.core.ioc import IOC_PATTERNS
 import numpy as np
-import joblib
-import os
 import re
+import json
+import gzip
+import requests 
 
+router = APIRouter()
+
+# 전역 메모리 저장소
 log_storage = []
-status_counter = defaultdict(int)
-router = APIRouter()        # FastAPI 생성
+status_counter = Counter()
+counter_lock = Lock()
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))     #경로 설정
+# 모델 & 피처 로드 (서버 시작 시 1회)
 MODEL_PATH = load_model("isolation_model.pkl")
 FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
-
-class LogLine(BaseModel):
-    log: str  
+ 
+API_SERVER_URL = "http://127.0.0.1:9000/api/logs" ##수정하기
 
 def extract_features(parsed: dict) -> dict:
     url = parsed["url"]
@@ -27,27 +31,22 @@ def extract_features(parsed: dict) -> dict:
 
     url_length = len(url)
     url_depth = url.count('/')
-    has_query_param = 1 if '?' in url else 0
+    has_query_param = int('?' in url)
     special_char_count = len(re.findall(r"[^\w/]", str(url)))
 
-
     agent_length = len(agent)
-    ref_exists = 0 if referer == "-" else 1
+    ref_exists = int(referer != "-")
 
-    # IOC 키워드 분리
-    IOC_PATTERNS = joblib.load(os.path.join("app", "model", "ioc_keywords.pkl"))
     url_ioc_keywords = IOC_PATTERNS.get("url", [])
     ua_ioc_keywords = IOC_PATTERNS.get("user_agent", [])
 
-
-    def count_ioc(text: str, patterns=IOC_PATTERNS) -> int:
+    def count_ioc(text: str, patterns) -> int:
         text = str(text).lower()
         return sum(1 for pattern in patterns if pattern in text)
 
     uri_ioc_count = count_ioc(url, url_ioc_keywords)
     ua_ioc_count = count_ioc(agent, ua_ioc_keywords)
     ioc_total_count = uri_ioc_count + ua_ioc_count
-
 
     return {
         "status": parsed["status"],
@@ -62,63 +61,78 @@ def extract_features(parsed: dict) -> dict:
         "ua_ioc_count": ua_ioc_count,
         "ioc_total_count": ioc_total_count,
     }
-    
-def scale_score(raw_score, score_min=-0.1804, score_max=0.2810):        # min-max 스케줄링 적용
-    raw_score = np.clip(raw_score, score_min, score_max)
-    norm_score = (raw_score - score_min) / (score_max - score_min)      # 0~1 정규화
-    inverted_score = 1 - norm_score                                     # 높을수록 비정상 로그
-    return round(inverted_score * 100, 2)   
 
-@router.post("/predict_line")
-def predict_line(input_data: LogLine):
+@router.post("/receive_logs")
+async def receive_logs(request: Request):
     try:
-        log_storage.append(input_data.log)
-        parsed = parse_log_line(input_data.log)
-        features = extract_features(parsed)
+        encoding = request.headers.get("Content-Encoding", "").lower()
+        raw_body = await request.body()
 
-        status = parsed["status"]           # 상태 코드 카운팅
-        status_counter[status] += 1
+        if encoding == "gzip":
+            raw_body = gzip.decompress(raw_body)
 
-        print("parsed : ", parsed) ## 잠시 테스트용
-        print("features", features)
+        try:
+            logs = json.loads(raw_body)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON format")
 
-        method = parsed.get("method", "UNKNOWN")
-        if f"method_{method}" not in METHOD_COL_PATH:
-            method = "UNKNOWN"
+        if not isinstance(logs, list):
+            raise HTTPException(status_code=400, detail="Expected a JSON array of logs")
 
-        method_onehot = {
-            col: 1 if col == f"method_{method}" else 0
-            for col in METHOD_COL_PATH
-        }
+        results = []
+        for log in logs:
+            parsed = {
+                "method": log.get("method"),
+                "url": log.get("url"),
+                "status": log.get("statusCode"),
+                "size": log.get("bytesSent"),
+                "referer": log.get("referer"),
+                "user_agent": log.get("userAgent"),
+            }
 
+            features = extract_features(parsed)
 
-        # 모든 피처 병합
-        full_features = {**features, **method_onehot}
+            method = parsed.get("method", "UNKNOWN")
+            if f"method_{method}" not in METHOD_COL_PATH:
+                method = "UNKNOWN"
+            method_onehot = {col: int(col == f"method_{method}") for col in METHOD_COL_PATH}
 
-        # 순서 맞춰서 vector 생성
-        input_vector = [full_features.get(f, 0) for f in FEATURE_PATH]
-        input_vector = np.array(input_vector).reshape(1, -1)
+            full_features = {**features, **method_onehot}
+            input_vector = np.array([full_features.get(f, 0) for f in FEATURE_PATH]).reshape(1, -1)
 
-        raw_score = MODEL_PATH.decision_function(input_vector)[0] #모델 출력 결과 보여주기
-        scaled_score = scale_score(raw_score)
-        print(f"[예측 결과] 이상치 점수: {scaled_score}")
+            raw_score = MODEL_PATH.decision_function(input_vector)[0]
+            scaled_score = scale_score(raw_score)
 
+            results.append({
+                "log": log,
+                "score": scaled_score
+            })
+
+            with counter_lock:
+                status_counter[parsed["status"]] += 1
+
+            log_storage.append(log)
+
+        try:
+            res = requests.post(API_SERVER_URL, json=results, timeout=5)
+            res.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[WARN] API 서버 전송 실패: {e}")
+
+        return {"count": len(results), "results": results}
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    
-@router.get("/logs") #전체 로그 보여주는 기능
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/logs")
 def get_all_logs():
     return {"logs": log_storage}
 
-@router.get("/status_chart") # 상태 코드 기반으로 도넛 차트 형식으로 보여주는 기능
+@router.get("/status_chart")
 def get_status_chart_data():
     total = sum(status_counter.values())
     if total == 0:
         return {"labels": [], "values": []}
-
-    labels = [str(code) for code in status_counter]
+    labels = list(status_counter.keys())
     values = [round((count / total) * 100, 2) for count in status_counter.values()]
     return {"labels": labels, "values": values}
-
-    
