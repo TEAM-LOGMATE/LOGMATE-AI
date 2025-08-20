@@ -124,15 +124,3 @@ async def receive_logs(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/logs")
-def get_all_logs():
-    return {"logs": log_storage}
-
-@router.get("/status_chart")
-def get_status_chart_data():
-    total = sum(status_counter.values())
-    if total == 0:
-        return {"labels": [], "values": []}
-    labels = list(status_counter.keys())
-    values = [round((count / total) * 100, 2) for count in status_counter.values()]
-    return {"labels": labels, "values": values}
