@@ -82,13 +82,13 @@ source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 9000
 ```
----
 
 #### ✅ Docker로 실행
 ```bash
 docker build -t logmate-ai-server .
 docker run -p 9000:9000 logmate-ai-server
 ```
+---
 
 ### 📄 오픈소스 라이선스
 본 프로젝트는 아래의 오픈소스 라이브러리를 사용합니다.
