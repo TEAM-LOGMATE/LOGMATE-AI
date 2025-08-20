@@ -90,7 +90,7 @@ def compute_score_for_log(log: dict) -> float:
     raw_score = MODEL_PATH.decision_function(input_vector)[0]
     return float(scale_score(raw_score))
 
-@router.post("/score")
+@router.post("/receive_logs")
 async def score(request: Request):
     try:
         # 바디 수신(+gzip 지원)
