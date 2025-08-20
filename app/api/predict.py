@@ -8,7 +8,7 @@ import numpy as np
 import re
 import json
 import gzip
-import requests 
+import requests
 
 router = APIRouter()
 
@@ -21,8 +21,8 @@ counter_lock = Lock()
 MODEL_PATH = load_model("isolation_model.pkl")
 FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
- 
-API_SERVER_URL = "http://127.0.0.1:9000/api/logs" ##수정하기
+
+API_SERVER_URL = "http://127.0.0.1:9000/api/logs"  # 점수 전송 대상
 
 def extract_features(parsed: dict) -> dict:
     url = parsed["url"]
@@ -62,65 +62,79 @@ def extract_features(parsed: dict) -> dict:
         "ioc_total_count": ioc_total_count,
     }
 
-@router.post("/receive_logs")
-async def receive_logs(request: Request):
+def compute_score_for_log(log: dict) -> float:
+    parsed = {
+        "method": log.get("method"),
+        "url": log.get("url"),
+        "status": log.get("statusCode"),
+        "size": log.get("bytesSent"),
+        "referer": log.get("referer"),
+        "user_agent": log.get("userAgent"),
+    }
+
+    # 필수값 검증(없으면 500 방지)
+    for k in ["method", "url", "status", "size", "referer", "user_agent"]:
+        if parsed.get(k) is None:
+            raise ValueError(f"Missing required field: {k}")
+
+    features = extract_features(parsed)
+
+    method = parsed.get("method", "UNKNOWN")
+    if f"method_{method}" not in METHOD_COL_PATH:
+        method = "UNKNOWN"
+    method_onehot = {col: int(col == f"method_{method}") for col in METHOD_COL_PATH}
+
+    full_features = {**features, **method_onehot}
+    input_vector = np.array([full_features.get(f, 0) for f in FEATURE_PATH]).reshape(1, -1)
+
+    raw_score = MODEL_PATH.decision_function(input_vector)[0]
+    return float(scale_score(raw_score))
+
+@router.post("/score")
+async def score(request: Request):
     try:
+        # 바디 수신(+gzip 지원)
         encoding = request.headers.get("Content-Encoding", "").lower()
         raw_body = await request.body()
-
         if encoding == "gzip":
             raw_body = gzip.decompress(raw_body)
 
         try:
-            logs = json.loads(raw_body)
+            payload = json.loads(raw_body)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON format")
 
-        if not isinstance(logs, list):
-            raise HTTPException(status_code=400, detail="Expected a JSON array of logs")
+        # 단일 로그만 허용 (배열로 오면 1개만 들어있을 때만 허용)
+        if isinstance(payload, list):
+            if len(payload) != 1:
+                raise HTTPException(status_code=400, detail="Expected a single log object, not an array")
+            log = payload[0]
+        elif isinstance(payload, dict):
+            log = payload
+        else:
+            raise HTTPException(status_code=400, detail="Expected a single log object")
 
-        results = []
-        for log in logs:
-            parsed = {
-                "method": log.get("method"),
-                "url": log.get("url"),
-                "status": log.get("statusCode"),
-                "size": log.get("bytesSent"),
-                "referer": log.get("referer"),
-                "user_agent": log.get("userAgent"),
-            }
+        # 점수 계산
+        score_value = compute_score_for_log(log)
 
-            features = extract_features(parsed)
+        # 내부 집계/저장(원하면 제거 가능)
+        with counter_lock:
+            status = log.get("statusCode")
+            if status is not None:
+                status_counter[status] += 1
+        log_storage.append(log)
 
-            method = parsed.get("method", "UNKNOWN")
-            if f"method_{method}" not in METHOD_COL_PATH:
-                method = "UNKNOWN"
-            method_onehot = {col: int(col == f"method_{method}") for col in METHOD_COL_PATH}
-
-            full_features = {**features, **method_onehot}
-            input_vector = np.array([full_features.get(f, 0) for f in FEATURE_PATH]).reshape(1, -1)
-
-            raw_score = MODEL_PATH.decision_function(input_vector)[0]
-            scaled_score = scale_score(raw_score)
-
-            results.append({
-                "log": log,
-                "score": scaled_score
-            })
-
-            with counter_lock:
-                status_counter[parsed["status"]] += 1
-
-            log_storage.append(log)
-
+        # 외부 API로 점수만 전송
         try:
-            res = requests.post(API_SERVER_URL, json=results, timeout=5)
+            res = requests.post(API_SERVER_URL, json={"score": score_value}, timeout=5)
             res.raise_for_status()
         except requests.RequestException as e:
             print(f"[WARN] API 서버 전송 실패: {e}")
 
-        return {"count": len(results), "results": results}
+        # 클라이언트에도 점수만 응답
+        return {"score": score_value}
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
