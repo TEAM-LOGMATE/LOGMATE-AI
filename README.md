@@ -108,8 +108,8 @@ docker run -p 9000:9000 logmate-ai-server
 ---
 
 ### 🙏 기여 가이드
-- PR: [.github/pull_request_template.md](.github/pull_request_template.md)  
-- Issue: [.github/ISSUE_TEMPLATE/issue_report.md](.github/ISSUE_TEMPLATE/issue_report.md)
+- PR 생성은 [pull_request_template.md](.github/pull_request_template.md) 문서를 참고해 주세요.
+- Issue 생성은 [issue_report.md](.github/ISSUE_TEMPLATE/issue_report.md) 문서를 참고해 주세요.
 
 ---
 ### 📲 연락처
