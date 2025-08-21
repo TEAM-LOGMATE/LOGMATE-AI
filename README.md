@@ -26,7 +26,7 @@
 ---
 
 ## 📂 클래스 다이어그램
-(추가 예정)
+<img width="1536" height="1002" alt="logmate drawio (3)" src="https://github.com/user-attachments/assets/3744ccec-c7bb-4bd8-8544-ed166142a844" />
 
 ---
 
