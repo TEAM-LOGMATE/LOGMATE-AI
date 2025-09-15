@@ -8,11 +8,10 @@ import numpy as np
 import re
 import json
 import gzip
-import requests
 
 router = APIRouter()
 
-# 전역 메모리 저장소
+# 전역 메모리 저장소 (필요 없다면 삭제 가능)
 log_storage = []
 status_counter = Counter()
 counter_lock = Lock()
@@ -21,8 +20,6 @@ counter_lock = Lock()
 MODEL_PATH = load_model("isolation_model.pkl")
 FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
-
-API_SERVER_URL = "http://127.0.0.1:9000/api/logs"  # 점수 전송 대상
 
 def extract_features(parsed: dict) -> dict:
     url = parsed["url"]
@@ -72,7 +69,7 @@ def compute_score_for_log(log: dict) -> float:
         "user_agent": log.get("userAgent"),
     }
 
-    # 필수값 검증(없으면 500 방지)
+    # 필수값 검증
     for k in ["method", "url", "status", "size", "referer", "user_agent"]:
         if parsed.get(k) is None:
             raise ValueError(f"Missing required field: {k}")
@@ -93,7 +90,7 @@ def compute_score_for_log(log: dict) -> float:
 @router.post("/receive_logs")
 async def score(request: Request):
     try:
-        # 바디 수신(+gzip 지원)
+        # 바디 수신 (+gzip 지원)
         encoding = request.headers.get("Content-Encoding", "").lower()
         raw_body = await request.body()
         if encoding == "gzip":
@@ -104,7 +101,7 @@ async def score(request: Request):
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON format")
 
-        # 단일 로그만 허용 (배열로 오면 1개만 들어있을 때만 허용)
+        # 단일 로그만 허용
         if isinstance(payload, list):
             if len(payload) != 1:
                 raise HTTPException(status_code=400, detail="Expected a single log object, not an array")
@@ -117,21 +114,14 @@ async def score(request: Request):
         # 점수 계산
         score_value = compute_score_for_log(log)
 
-        # 내부 집계/저장(원하면 제거 가능)
+        # 내부 집계/저장 (원하면 제거 가능)
         with counter_lock:
             status = log.get("statusCode")
             if status is not None:
                 status_counter[status] += 1
         log_storage.append(log)
 
-        # 외부 API로 점수만 전송
-        try:
-            res = requests.post(API_SERVER_URL, json={"score": score_value}, timeout=5)
-            res.raise_for_status()
-        except requests.RequestException as e:
-            print(f"[WARN] API 서버 전송 실패: {e}")
-
-        # 클라이언트에도 점수만 응답
+        # 클라이언트에 점수 응답만 반환
         return {"score": score_value}
 
     except HTTPException:
