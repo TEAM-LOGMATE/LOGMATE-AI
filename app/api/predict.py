@@ -27,7 +27,7 @@ FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
 
 
-# 🔹 Swagger 입력 모델 정의 (직접 입력 가능)
+# Swagger 입력 모델 정의 (직접 입력 가능)
 class LogRequest(BaseModel):
     method: str
     url: str
@@ -103,7 +103,7 @@ def compute_score_for_log(log: dict) -> float:
     return float(scale_score(raw_score))
 
 
-# 🔹 Swagger + gzip 호환 처리
+# Swagger + gzip 호환 처리
 @router.post("/receive_logs")
 async def score(request: Request, body: LogRequest = None):
     try:
