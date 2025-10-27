@@ -110,10 +110,10 @@ async def score(request: Request):
             log = payload
         else:
             raise HTTPException(status_code=400, detail="Expected a single log object")
-
+        print(f"[STREAM] Received log: {json.dumps(log, ensure_ascii=False)[:500]}")
         # 점수 계산
         score_value = compute_score_for_log(log)
-
+        print(f"[SCORE] Calculated: {score_value:.4f}")
         # 내부 집계/저장 (원하면 제거 가능)
         with counter_lock:
             status = log.get("statusCode")
