@@ -8,8 +8,12 @@ import numpy as np
 import re
 import json
 import gzip
+import logging
 
 router = APIRouter()
+
+# 로깅 설정 추가
+logger = logging.getLogger("uvicorn.access")
 
 # 전역 메모리 저장소 (필요 없다면 삭제 가능)
 log_storage = []
@@ -20,6 +24,7 @@ counter_lock = Lock()
 MODEL_PATH = load_model("isolation_model.pkl")
 FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
+
 
 def extract_features(parsed: dict) -> dict:
     url = parsed["url"]
@@ -59,6 +64,7 @@ def extract_features(parsed: dict) -> dict:
         "ioc_total_count": ioc_total_count,
     }
 
+
 def compute_score_for_log(log: dict) -> float:
     parsed = {
         "method": log.get("method"),
@@ -87,6 +93,7 @@ def compute_score_for_log(log: dict) -> float:
     raw_score = MODEL_PATH.decision_function(input_vector)[0]
     return float(scale_score(raw_score))
 
+
 @router.post("/receive_logs")
 async def score(request: Request):
     try:
@@ -110,10 +117,15 @@ async def score(request: Request):
             log = payload
         else:
             raise HTTPException(status_code=400, detail="Expected a single log object")
-        print(f"[STREAM] Received log: {json.dumps(log, ensure_ascii=False)[:500]}")
+
+        #logger 사용
+        logger.info(f"[STREAM] Received log: {json.dumps(log, ensure_ascii=False)[:500]}")
+
         # 점수 계산
         score_value = compute_score_for_log(log)
-        print(f"[SCORE] Calculated: {score_value:.4f}")
+
+        logger.info(f"[SCORE] Calculated: {score_value:.4f}")
+
         # 내부 집계/저장 (원하면 제거 가능)
         with counter_lock:
             status = log.get("statusCode")
@@ -127,4 +139,5 @@ async def score(request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"[ERROR] {str(e)}")  # ✅ 예외도 로깅
         raise HTTPException(status_code=500, detail=str(e))
