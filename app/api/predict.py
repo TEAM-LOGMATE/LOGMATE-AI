@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 from collections import Counter
 from threading import Lock
 from app.core.model import load_model
@@ -12,18 +13,28 @@ import logging
 
 router = APIRouter()
 
-# 로깅 설정 추가
+# 로깅 설정
 logger = logging.getLogger("uvicorn.access")
 
-# 전역 메모리 저장소 (필요 없다면 삭제 가능)
+# 전역 메모리 저장소
 log_storage = []
 status_counter = Counter()
 counter_lock = Lock()
 
-# 모델 & 피처 로드 (서버 시작 시 1회)
+# 모델 & 피처 로드
 MODEL_PATH = load_model("isolation_model.pkl")
 FEATURE_PATH = load_model("features.pkl")
 METHOD_COL_PATH = load_model("method_cols.pkl")
+
+
+# 🔹 Swagger 입력 모델 정의 (직접 입력 가능)
+class LogRequest(BaseModel):
+    method: str
+    url: str
+    statusCode: int
+    bytesSent: int
+    referer: str
+    userAgent: str
 
 
 def extract_features(parsed: dict) -> dict:
@@ -75,13 +86,11 @@ def compute_score_for_log(log: dict) -> float:
         "user_agent": log.get("userAgent"),
     }
 
-    # 필수값 검증
     for k in ["method", "url", "status", "size", "referer", "user_agent"]:
         if parsed.get(k) is None:
             raise ValueError(f"Missing required field: {k}")
 
     features = extract_features(parsed)
-
     method = parsed.get("method", "UNKNOWN")
     if f"method_{method}" not in METHOD_COL_PATH:
         method = "UNKNOWN"
@@ -94,50 +103,51 @@ def compute_score_for_log(log: dict) -> float:
     return float(scale_score(raw_score))
 
 
+# 🔹 Swagger + gzip 호환 처리
 @router.post("/receive_logs")
-async def score(request: Request):
+async def score(request: Request, body: LogRequest = None):
     try:
-        # 바디 수신 (+gzip 지원)
-        encoding = request.headers.get("Content-Encoding", "").lower()
         raw_body = await request.body()
+        encoding = request.headers.get("Content-Encoding", "").lower()
+
+        # gzip 처리
         if encoding == "gzip":
             raw_body = gzip.decompress(raw_body)
 
-        try:
-            payload = json.loads(raw_body)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON format")
-
-        # 단일 로그만 허용
-        if isinstance(payload, list):
-            if len(payload) != 1:
-                raise HTTPException(status_code=400, detail="Expected a single log object, not an array")
-            log = payload[0]
-        elif isinstance(payload, dict):
-            log = payload
+        # Swagger에서 body로 온 경우 (body가 이미 파싱된 상태)
+        if body:
+            log = body.dict()
         else:
-            raise HTTPException(status_code=400, detail="Expected a single log object")
+            try:
+                payload = json.loads(raw_body)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON format")
 
-        #logger 사용
+            if isinstance(payload, list):
+                if len(payload) != 1:
+                    raise HTTPException(status_code=400, detail="Expected a single log object, not an array")
+                log = payload[0]
+            elif isinstance(payload, dict):
+                log = payload
+            else:
+                raise HTTPException(status_code=400, detail="Expected a single log object")
+
+        # 로그 출력
         logger.info(f"[STREAM] Received log: {json.dumps(log, ensure_ascii=False)[:500]}")
 
         # 점수 계산
         score_value = compute_score_for_log(log)
-
         logger.info(f"[SCORE] Calculated: {score_value:.4f}")
 
-        # 내부 집계/저장 (원하면 제거 가능)
+        # 내부 저장
         with counter_lock:
             status = log.get("statusCode")
             if status is not None:
                 status_counter[status] += 1
         log_storage.append(log)
 
-        # 클라이언트에 점수 응답만 반환
         return {"score": score_value}
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.exception(f"[ERROR] {str(e)}")  # ✅ 예외도 로깅
+        logger.exception(f"[ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
